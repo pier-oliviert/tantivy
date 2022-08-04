@@ -191,13 +191,14 @@ mod test {
     use super::{CompositeFile, CompositeWrite};
     use crate::directory::{Directory, RamDirectory};
     use crate::schema::Field;
+    use tokio_test;
 
     #[test]
     fn test_composite_file() -> crate::Result<()> {
         let path = Path::new("test_path");
         let directory = RamDirectory::create();
         {
-            let w = directory.open_write(path).unwrap();
+            let w = tokio_test::block_on(directory.open_write(path)).unwrap();
             let mut composite_write = CompositeWrite::wrap(w);
             let mut write_0 = composite_write.for_field(Field::from_field_id(0u32));
             VInt(32431123u64).serialize(&mut write_0)?;

@@ -28,14 +28,14 @@ impl<'a> PreparedCommit<'a> {
     }
 
     /// Rollbacks any change.
-    pub fn abort(self) -> crate::Result<Opstamp> {
-        self.index_writer.rollback()
+    pub async fn abort(self) -> crate::Result<Opstamp> {
+        self.index_writer.rollback().await
     }
 
     /// Proceeds to commit.
     /// See `.commit_future()`.
-    pub fn commit(self) -> crate::Result<Opstamp> {
-        self.commit_future().wait()
+    pub async fn commit(self) -> crate::Result<Opstamp> {
+        self.commit_future().await.wait()
     }
 
     /// Proceeds to commit.
@@ -43,10 +43,11 @@ impl<'a> PreparedCommit<'a> {
     /// Unfortunately, contrary to what `PrepareCommit` may suggests,
     /// this operation is not at all really light.
     /// At this point deletes have not been flushed yet.
-    pub fn commit_future(self) -> FutureResult<Opstamp> {
+    pub async fn commit_future(self) -> FutureResult<Opstamp> {
         info!("committing {}", self.opstamp);
         self.index_writer
             .segment_updater()
             .schedule_commit(self.opstamp, self.payload)
+            .await
     }
 }

@@ -148,10 +148,10 @@ impl RamDirectory {
     /// written using the `atomic_write` api.
     ///
     /// If an error is encounterred, files may be persisted partially.
-    pub fn persist(&self, dest: &dyn Directory) -> crate::Result<()> {
+    pub async fn persist(&self, dest: &dyn Directory) -> crate::Result<()> {
         let wlock = self.fs.write().unwrap();
         for (path, file) in wlock.fs.iter() {
-            let mut dest_wrt = dest.open_write(path)?;
+            let mut dest_wrt = dest.open_write(path).await?;
             dest_wrt.write_all(file.read_bytes()?.as_slice())?;
             dest_wrt.terminate()?;
         }
@@ -159,17 +159,18 @@ impl RamDirectory {
     }
 }
 
+#[async_trait::async_trait]
 impl Directory for RamDirectory {
-    fn get_file_handle(&self, path: &Path) -> Result<Arc<dyn FileHandle>, OpenReadError> {
-        let file_slice = self.open_read(path)?;
+    async fn get_file_handle(&self, path: &Path) -> Result<Arc<dyn FileHandle>, OpenReadError> {
+        let file_slice = self.open_read(path).await?;
         Ok(Arc::new(file_slice))
     }
 
-    fn open_read(&self, path: &Path) -> result::Result<FileSlice, OpenReadError> {
+    async fn open_read(&self, path: &Path) -> result::Result<FileSlice, OpenReadError> {
         self.fs.read().unwrap().open_read(path)
     }
 
-    fn delete(&self, path: &Path) -> result::Result<(), DeleteError> {
+    async fn delete(&self, path: &Path) -> result::Result<(), DeleteError> {
         fail_point!("RamDirectory::delete", |_| {
             Err(DeleteError::IoError {
                 io_error: Arc::new(io::Error::from(io::ErrorKind::Other)),
@@ -179,7 +180,7 @@ impl Directory for RamDirectory {
         self.fs.write().unwrap().delete(path)
     }
 
-    fn exists(&self, path: &Path) -> Result<bool, OpenReadError> {
+    async fn exists(&self, path: &Path) -> Result<bool, OpenReadError> {
         Ok(self
             .fs
             .read()
@@ -190,7 +191,7 @@ impl Directory for RamDirectory {
             .exists(path))
     }
 
-    fn open_write(&self, path: &Path) -> Result<WritePtr, OpenWriteError> {
+    async fn open_write(&self, path: &Path) -> Result<WritePtr, OpenWriteError> {
         let mut fs = self.fs.write().unwrap();
         let path_buf = PathBuf::from(path);
         let vec_writer = VecWriter::new(path_buf.clone(), self.clone());
@@ -203,18 +204,19 @@ impl Directory for RamDirectory {
         }
     }
 
-    fn atomic_read(&self, path: &Path) -> Result<Vec<u8>, OpenReadError> {
-        let bytes =
-            self.open_read(path)?
-                .read_bytes()
-                .map_err(|io_error| OpenReadError::IoError {
-                    io_error: Arc::new(io_error),
-                    filepath: path.to_path_buf(),
-                })?;
+    async fn atomic_read(&self, path: &Path) -> Result<Vec<u8>, OpenReadError> {
+        let bytes = self
+            .open_read(path)
+            .await?
+            .read_bytes()
+            .map_err(|io_error| OpenReadError::IoError {
+                io_error: Arc::new(io_error),
+                filepath: path.to_path_buf(),
+            })?;
         Ok(bytes.as_slice().to_owned())
     }
 
-    fn atomic_write(&self, path: &Path, data: &[u8]) -> io::Result<()> {
+    async fn atomic_write(&self, path: &Path, data: &[u8]) -> io::Result<()> {
         let path_buf = PathBuf::from(path);
         self.fs.write().unwrap().write(path_buf, data);
         if path == *META_FILEPATH {
@@ -223,11 +225,11 @@ impl Directory for RamDirectory {
         Ok(())
     }
 
-    fn watch(&self, watch_callback: WatchCallback) -> crate::Result<WatchHandle> {
+    async fn watch(&self, watch_callback: WatchCallback) -> crate::Result<WatchHandle> {
         Ok(self.fs.write().unwrap().watch(watch_callback))
     }
 
-    fn sync_directory(&self) -> io::Result<()> {
+    async fn sync_directory(&self) -> io::Result<()> {
         Ok(())
     }
 }

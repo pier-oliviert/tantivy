@@ -309,8 +309,12 @@ pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+#[async_trait::async_trait]
 impl Directory for MmapDirectory {
-    fn get_file_handle(&self, path: &Path) -> result::Result<Arc<dyn FileHandle>, OpenReadError> {
+    async fn get_file_handle(
+        &self,
+        path: &Path,
+    ) -> result::Result<Arc<dyn FileHandle>, OpenReadError> {
         debug!("Open Read {:?}", path);
         let full_path = self.resolve_path(path);
 
@@ -336,7 +340,7 @@ impl Directory for MmapDirectory {
 
     /// Any entry associated to the path in the mmap will be
     /// removed before the file is deleted.
-    fn delete(&self, path: &Path) -> result::Result<(), DeleteError> {
+    async fn delete(&self, path: &Path) -> result::Result<(), DeleteError> {
         let full_path = self.resolve_path(path);
         fs::remove_file(&full_path).map_err(|e| {
             if e.kind() == io::ErrorKind::NotFound {
@@ -351,12 +355,12 @@ impl Directory for MmapDirectory {
         Ok(())
     }
 
-    fn exists(&self, path: &Path) -> Result<bool, OpenReadError> {
+    async fn exists(&self, path: &Path) -> Result<bool, OpenReadError> {
         let full_path = self.resolve_path(path);
         Ok(full_path.exists())
     }
 
-    fn open_write(&self, path: &Path) -> Result<WritePtr, OpenWriteError> {
+    async fn open_write(&self, path: &Path) -> Result<WritePtr, OpenWriteError> {
         debug!("Open Write {:?}", path);
         let full_path = self.resolve_path(path);
 
@@ -389,7 +393,7 @@ impl Directory for MmapDirectory {
         Ok(BufWriter::new(Box::new(writer)))
     }
 
-    fn atomic_read(&self, path: &Path) -> Result<Vec<u8>, OpenReadError> {
+    async fn atomic_read(&self, path: &Path) -> Result<Vec<u8>, OpenReadError> {
         let full_path = self.resolve_path(path);
         let mut buffer = Vec::new();
         match File::open(&full_path) {
@@ -409,14 +413,14 @@ impl Directory for MmapDirectory {
         }
     }
 
-    fn atomic_write(&self, path: &Path, content: &[u8]) -> io::Result<()> {
+    async fn atomic_write(&self, path: &Path, content: &[u8]) -> io::Result<()> {
         debug!("Atomic Write {:?}", path);
         let full_path = self.resolve_path(path);
         atomic_write(&full_path, content)?;
         Ok(())
     }
 
-    fn acquire_lock(&self, lock: &Lock) -> Result<DirectoryLock, LockError> {
+    async fn acquire_lock(&self, lock: &Lock) -> Result<DirectoryLock, LockError> {
         let full_path = self.resolve_path(&lock.filepath);
         // We make sure that the file exists.
         let file: File = OpenOptions::new()
@@ -436,11 +440,11 @@ impl Directory for MmapDirectory {
         })))
     }
 
-    fn watch(&self, watch_callback: WatchCallback) -> crate::Result<WatchHandle> {
+    async fn watch(&self, watch_callback: WatchCallback) -> crate::Result<WatchHandle> {
         Ok(self.inner.watch(watch_callback))
     }
 
-    fn sync_directory(&self) -> Result<(), io::Error> {
+    async fn sync_directory(&self) -> Result<(), io::Error> {
         let mut open_opts = OpenOptions::new();
 
         // Linux needs read to be set, otherwise returns EINVAL
@@ -493,10 +497,10 @@ mod tests {
         let mmap_directory = MmapDirectory::create_from_tempdir().unwrap();
         let path = PathBuf::from("test");
         {
-            let mut w = mmap_directory.open_write(&path).unwrap();
+            let mut w = tokio_test::block_on(mmap_directory.open_write(&path)).unwrap();
             w.flush().unwrap();
         }
-        let readonlymap = mmap_directory.open_read(&path).unwrap();
+        let readonlymap = tokio_test::block_on(mmap_directory.open_read(&path)).unwrap();
         assert_eq!(readonlymap.len(), 0);
     }
 

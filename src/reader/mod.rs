@@ -64,7 +64,7 @@ impl IndexReaderBuilder {
     /// Building the reader is a non-trivial operation that requires
     /// to open different segment readers. It may take hundreds of milliseconds
     /// of time and it may return an error.
-    pub fn try_into(self) -> crate::Result<IndexReader> {
+    pub async fn try_into(self) -> crate::Result<IndexReader> {
         let searcher_generation_inventory = Inventory::default();
         let warming_state = WarmingState::new(
             self.num_warming_threads,
@@ -76,7 +76,8 @@ impl IndexReaderBuilder {
             self.index,
             warming_state,
             searcher_generation_inventory,
-        )?;
+        )
+        .await?;
         let inner_reader_arc = Arc::new(inner_reader);
         let watch_handle_opt: Option<WatchHandle> = match self.reload_policy {
             ReloadPolicy::Manual => {
@@ -96,7 +97,8 @@ impl IndexReaderBuilder {
                 let watch_handle = inner_reader_arc
                     .index
                     .directory()
-                    .watch(WatchCallback::new(callback))?;
+                    .watch(WatchCallback::new(callback))
+                    .await?;
                 Some(watch_handle)
             }
         };
@@ -145,7 +147,7 @@ impl IndexReaderBuilder {
 impl TryInto<IndexReader> for IndexReaderBuilder {
     type Error = crate::TantivyError;
 
-    fn try_into(self) -> crate::Result<IndexReader> {
+    async fn try_into(self) -> crate::Result<IndexReader> {
         IndexReaderBuilder::try_into(self)
     }
 }
@@ -160,14 +162,14 @@ struct InnerIndexReader {
 }
 
 impl InnerIndexReader {
-    fn new(
+    async fn new(
         doc_store_cache_size: usize,
         index: Index,
         warming_state: WarmingState,
         searcher_generation_inventory: Inventory<SearcherGeneration>,
     ) -> crate::Result<Self> {
         let searcher_generation_counter: Arc<AtomicU64> = Default::default();
-        let segment_readers = Self::open_segment_readers(&index)?;
+        let segment_readers = Self::open_segment_readers(&index).await?;
         let searcher_generation = Self::create_new_searcher_generation(
             &segment_readers,
             &searcher_generation_counter,
@@ -179,7 +181,8 @@ impl InnerIndexReader {
             doc_store_cache_size,
             &warming_state,
             searcher_generation,
-        )?;
+        )
+        .await?;
         Ok(InnerIndexReader {
             doc_store_cache_size,
             index,
@@ -193,9 +196,9 @@ impl InnerIndexReader {
     ///
     /// This function acquires a lot to prevent GC from removing files
     /// as we are opening our index.
-    fn open_segment_readers(index: &Index) -> crate::Result<Vec<SegmentReader>> {
+    async fn open_segment_readers(index: &Index) -> crate::Result<Vec<SegmentReader>> {
         // Prevents segment files from getting deleted while we are in the process of opening them
-        let _meta_lock = index.directory().acquire_lock(&META_LOCK)?;
+        let _meta_lock = index.directory().acquire_lock(&META_LOCK).await?;
         let searchable_segments = index.searchable_segments()?;
         let segment_readers = searchable_segments
             .iter()
@@ -215,13 +218,13 @@ impl InnerIndexReader {
         searcher_generation_inventory.track(searcher_generation)
     }
 
-    fn create_searcher(
+    async fn create_searcher(
         index: &Index,
         doc_store_cache_size: usize,
         warming_state: &WarmingState,
         searcher_generation: TrackedObject<SearcherGeneration>,
     ) -> crate::Result<Arc<SearcherInner>> {
-        let segment_readers = Self::open_segment_readers(index)?;
+        let segment_readers = Self::open_segment_readers(index).await?;
         let schema = index.schema();
         let searcher = Arc::new(SearcherInner::new(
             schema,
@@ -235,8 +238,8 @@ impl InnerIndexReader {
         Ok(searcher)
     }
 
-    fn reload(&self) -> crate::Result<()> {
-        let segment_readers = Self::open_segment_readers(&self.index)?;
+    async fn reload(&self) -> crate::Result<()> {
+        let segment_readers = Self::open_segment_readers(&self.index).await?;
         let searcher_generation = Self::create_new_searcher_generation(
             &segment_readers,
             &self.searcher_generation_counter,
@@ -247,7 +250,8 @@ impl InnerIndexReader {
             self.doc_store_cache_size,
             &self.warming_state,
             searcher_generation,
-        )?;
+        )
+        .await?;
 
         self.searcher.store(searcher);
 
@@ -287,8 +291,8 @@ impl IndexReader {
     ///
     /// This automatic reload can take 10s of milliseconds to kick in however, and in unit tests
     /// it can be nice to deterministically force the reload of searchers.
-    pub fn reload(&self) -> crate::Result<()> {
-        self.inner.reload()
+    pub async fn reload(&self) -> crate::Result<()> {
+        self.inner.reload().await
     }
 
     /// Returns a searcher

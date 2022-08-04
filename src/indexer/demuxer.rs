@@ -108,7 +108,7 @@ fn get_alive_bitsets(
 /// The number of output_directories need to match max new segment ordinal from `demux_mapping`.
 ///
 /// The ordinal of `segments` need to match the ordinals provided in `demux_mapping`.
-pub fn demux(
+pub async fn demux(
     segments: &[Segment],
     demux_mapping: &DemuxMapping,
     target_settings: IndexSettings,
@@ -125,7 +125,8 @@ pub fn demux(
             target_settings.clone(),
             alive_bitset,
             output_directory,
-        )?;
+        )
+        .await?;
         indices.push(index);
     }
     Ok(indices)

@@ -67,19 +67,19 @@ mod tests {
         fieldnorm_writers.record(0u32, *TXT_FIELD, 3);
     }
 
-    #[test]
-    pub fn test_fieldnorm() -> crate::Result<()> {
+    #[tokio::test]
+    pub async fn test_fieldnorm() -> crate::Result<()> {
         let path = Path::new("test");
         let directory: RamDirectory = RamDirectory::create();
         {
-            let write: WritePtr = directory.open_write(Path::new("test"))?;
+            let write: WritePtr = directory.open_write(Path::new("test")).await?;
             let serializer = FieldNormsSerializer::from_write(write)?;
             let mut fieldnorm_writers = FieldNormsWriter::for_schema(&SCHEMA);
             fieldnorm_writers.record(2u32, *TXT_FIELD, 5);
             fieldnorm_writers.record(3u32, *TXT_FIELD, 3);
             fieldnorm_writers.serialize(serializer, None)?;
         }
-        let file = directory.open_read(path)?;
+        let file = directory.open_read(path).await?;
         {
             let fields_composite = CompositeFile::open(&file)?;
             assert!(fields_composite.open_read(*FIELD).is_none());
@@ -94,19 +94,19 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_fieldnorm_disabled() -> crate::Result<()> {
+    #[tokio::test]
+    async fn test_fieldnorm_disabled() -> crate::Result<()> {
         let mut schema_builder = Schema::builder();
         let text_options = TextOptions::default()
             .set_indexing_options(TextFieldIndexing::default().set_fieldnorms(false));
         let text = schema_builder.add_text_field("text", text_options);
         let schema = schema_builder.build();
-        let index = Index::create_in_ram(schema);
-        let mut writer = index.writer_for_tests()?;
+        let index = Index::create_in_ram(schema).await;
+        let mut writer = index.writer_for_tests().await?;
         writer.add_document(doc!(text=>"hello"))?;
         writer.add_document(doc!(text=>"hello hello hello"))?;
-        writer.commit()?;
-        let reader = index.reader()?;
+        writer.commit().await?;
+        let reader = index.reader().await?;
         let searcher = reader.searcher();
         let query = TermQuery::new(
             Term::from_field_text(text, "hello"),
@@ -123,19 +123,19 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_fieldnorm_enabled() -> crate::Result<()> {
+    #[tokio::test]
+    async fn test_fieldnorm_enabled() -> crate::Result<()> {
         let mut schema_builder = Schema::builder();
         let text_options = TextOptions::default()
             .set_indexing_options(TextFieldIndexing::default().set_fieldnorms(true));
         let text = schema_builder.add_text_field("text", text_options);
         let schema = schema_builder.build();
-        let index = Index::create_in_ram(schema);
-        let mut writer = index.writer_for_tests()?;
+        let index = Index::create_in_ram(schema).await;
+        let mut writer = index.writer_for_tests().await?;
         writer.add_document(doc!(text=>"hello"))?;
         writer.add_document(doc!(text=>"hello hello hello"))?;
-        writer.commit()?;
-        let reader = index.reader()?;
+        writer.commit().await?;
+        let reader = index.reader().await?;
         let searcher = reader.searcher();
         let query = TermQuery::new(
             Term::from_field_text(text, "hello"),

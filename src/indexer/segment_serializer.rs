@@ -16,7 +16,7 @@ pub struct SegmentSerializer {
 
 impl SegmentSerializer {
     /// Creates a new `SegmentSerializer`.
-    pub fn for_segment(
+    pub async fn for_segment(
         mut segment: Segment,
         is_in_merge: bool,
     ) -> crate::Result<SegmentSerializer> {
@@ -29,15 +29,15 @@ impl SegmentSerializer {
         } else {
             SegmentComponent::Store
         };
-        let store_write = segment.open_write(store_component)?;
+        let store_write = segment.open_write(store_component).await?;
 
-        let fast_field_write = segment.open_write(SegmentComponent::FastFields)?;
+        let fast_field_write = segment.open_write(SegmentComponent::FastFields).await?;
         let fast_field_serializer = CompositeFastFieldSerializer::from_write(fast_field_write)?;
 
-        let fieldnorms_write = segment.open_write(SegmentComponent::FieldNorms)?;
+        let fieldnorms_write = segment.open_write(SegmentComponent::FieldNorms).await?;
         let fieldnorms_serializer = FieldNormsSerializer::from_write(fieldnorms_write)?;
 
-        let postings_serializer = InvertedIndexSerializer::open(&mut segment)?;
+        let postings_serializer = InvertedIndexSerializer::open(&mut segment).await?;
         let compressor = segment.index().settings().docstore_compression;
         let blocksize = segment.index().settings().docstore_blocksize;
         Ok(SegmentSerializer {

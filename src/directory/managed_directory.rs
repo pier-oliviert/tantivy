@@ -49,20 +49,20 @@ struct MetaInformation {
 
 /// Saves the file containing the list of existing files
 /// that were created by tantivy.
-fn save_managed_paths(
+async fn save_managed_paths(
     directory: &dyn Directory,
     wlock: &RwLockWriteGuard<'_, MetaInformation>,
 ) -> io::Result<()> {
     let mut w = serde_json::to_vec(&wlock.managed_paths)?;
     writeln!(&mut w)?;
-    directory.atomic_write(&MANAGED_FILEPATH, &w[..])?;
+    directory.atomic_write(&MANAGED_FILEPATH, &w[..]).await?;
     Ok(())
 }
 
 impl ManagedDirectory {
     /// Wraps a directory as managed directory.
-    pub fn wrap(directory: Box<dyn Directory>) -> crate::Result<ManagedDirectory> {
-        match directory.atomic_read(&MANAGED_FILEPATH) {
+    pub async fn wrap(directory: Box<dyn Directory>) -> crate::Result<ManagedDirectory> {
+        match directory.atomic_read(&MANAGED_FILEPATH).await {
             Ok(data) => {
                 let managed_files_json = String::from_utf8_lossy(&data);
                 let managed_files: HashSet<PathBuf> = serde_json::from_str(&managed_files_json)
@@ -106,7 +106,7 @@ impl ManagedDirectory {
     /// If a file cannot be deleted (for permission reasons for instance)
     /// an error is simply logged, and the file remains in the list of managed
     /// files.
-    pub fn garbage_collect<L: FnOnce() -> HashSet<PathBuf>>(
+    pub async fn garbage_collect<L: FnOnce() -> HashSet<PathBuf>>(
         &mut self,
         get_living_files: L,
     ) -> crate::Result<GarbageCollectionResult> {
@@ -135,7 +135,7 @@ impl ManagedDirectory {
             // 2) writer change meta.json (for instance after a merge or a commit)
             // 3) gc kicks in.
             // 4) gc removes a file that was useful for process B, before process B opened it.
-            match self.acquire_lock(&META_LOCK) {
+            match self.acquire_lock(&META_LOCK).await {
                 Ok(_meta_lock) => {
                     let living_files = get_living_files();
                     for managed_path in &meta_informations_rlock.managed_paths {
@@ -155,7 +155,7 @@ impl ManagedDirectory {
         let mut deleted_files = vec![];
 
         for file_to_delete in files_to_delete {
-            match self.delete(&file_to_delete) {
+            match self.delete(&file_to_delete).await {
                 Ok(_) => {
                     info!("Deleted {:?}", file_to_delete);
                     deleted_files.push(file_to_delete);
@@ -189,8 +189,8 @@ impl ManagedDirectory {
             for delete_file in &deleted_files {
                 managed_paths_write.remove(delete_file);
             }
-            self.directory.sync_directory()?;
-            save_managed_paths(self.directory.as_mut(), &meta_informations_wlock)?;
+            self.directory.sync_directory().await?;
+            save_managed_paths(self.directory.as_mut(), &meta_informations_wlock).await?;
         }
 
         Ok(GarbageCollectionResult {
@@ -210,7 +210,7 @@ impl ManagedDirectory {
     /// File starting by "." are reserved to locks.
     /// They are not managed and cannot be subjected
     /// to garbage collection.
-    fn register_file_as_managed(&self, filepath: &Path) -> io::Result<()> {
+    async fn register_file_as_managed(&self, filepath: &Path) -> io::Result<()> {
         // Files starting by "." (e.g. lock files) are not managed.
         if !is_managed(filepath) {
             return Ok(());
@@ -223,7 +223,7 @@ impl ManagedDirectory {
         if !has_changed {
             return Ok(());
         }
-        save_managed_paths(self.directory.as_ref(), &meta_wlock)?;
+        save_managed_paths(self.directory.as_ref(), &meta_wlock).await?;
         // This is not the first file we add.
         // Therefore, we are sure that `.managed.json` has been already
         // properly created and we do not need to sync its parent directory.
@@ -235,13 +235,13 @@ impl ManagedDirectory {
         if managed_file_definitely_already_exists {
             return Ok(());
         }
-        self.directory.sync_directory()?;
+        self.directory.sync_directory().await?;
         Ok(())
     }
 
     /// Verify checksum of a managed file
-    pub fn validate_checksum(&self, path: &Path) -> result::Result<bool, OpenReadError> {
-        let reader = self.directory.open_read(path)?;
+    pub async fn validate_checksum(&self, path: &Path) -> result::Result<bool, OpenReadError> {
+        let reader = self.directory.open_read(path).await?;
         let (footer, data) = Footer::extract_footer(reader)
             .map_err(|io_error| OpenReadError::wrap_io_error(io_error, path.to_path_buf()))?;
         let bytes = data
@@ -268,59 +268,63 @@ impl ManagedDirectory {
     }
 }
 
+#[async_trait::async_trait]
 impl Directory for ManagedDirectory {
-    fn get_file_handle(&self, path: &Path) -> Result<Arc<dyn FileHandle>, OpenReadError> {
-        let file_slice = self.open_read(path)?;
+    async fn get_file_handle(&self, path: &Path) -> Result<Arc<dyn FileHandle>, OpenReadError> {
+        let file_slice = self.open_read(path).await?;
         Ok(Arc::new(file_slice))
     }
 
-    fn open_read(&self, path: &Path) -> result::Result<FileSlice, OpenReadError> {
-        let file_slice = self.directory.open_read(path)?;
+    async fn open_read(&self, path: &Path) -> result::Result<FileSlice, OpenReadError> {
+        let file_slice = self.directory.open_read(path).await?;
         let (footer, reader) = Footer::extract_footer(file_slice)
             .map_err(|io_error| OpenReadError::wrap_io_error(io_error, path.to_path_buf()))?;
         footer.is_compatible()?;
         Ok(reader)
     }
 
-    fn open_write(&self, path: &Path) -> result::Result<WritePtr, OpenWriteError> {
+    async fn open_write(&self, path: &Path) -> result::Result<WritePtr, OpenWriteError> {
         self.register_file_as_managed(path)
+            .await
             .map_err(|io_error| OpenWriteError::wrap_io_error(io_error, path.to_path_buf()))?;
+
         Ok(io::BufWriter::new(Box::new(FooterProxy::new(
             self.directory
-                .open_write(path)?
+                .open_write(path)
+                .await?
                 .into_inner()
                 .map_err(|_| ())
                 .expect("buffer should be empty"),
         ))))
     }
 
-    fn atomic_write(&self, path: &Path, data: &[u8]) -> io::Result<()> {
-        self.register_file_as_managed(path)?;
-        self.directory.atomic_write(path, data)
+    async fn atomic_write(&self, path: &Path, data: &[u8]) -> io::Result<()> {
+        self.register_file_as_managed(path).await?;
+        self.directory.atomic_write(path, data).await
     }
 
-    fn atomic_read(&self, path: &Path) -> result::Result<Vec<u8>, OpenReadError> {
-        self.directory.atomic_read(path)
+    async fn atomic_read(&self, path: &Path) -> result::Result<Vec<u8>, OpenReadError> {
+        self.directory.atomic_read(path).await
     }
 
-    fn delete(&self, path: &Path) -> result::Result<(), DeleteError> {
-        self.directory.delete(path)
+    async fn delete(&self, path: &Path) -> result::Result<(), DeleteError> {
+        self.directory.delete(path).await
     }
 
-    fn exists(&self, path: &Path) -> Result<bool, OpenReadError> {
-        self.directory.exists(path)
+    async fn exists(&self, path: &Path) -> Result<bool, OpenReadError> {
+        self.directory.exists(path).await
     }
 
-    fn acquire_lock(&self, lock: &Lock) -> result::Result<DirectoryLock, LockError> {
-        self.directory.acquire_lock(lock)
+    async fn acquire_lock(&self, lock: &Lock) -> result::Result<DirectoryLock, LockError> {
+        self.directory.acquire_lock(lock).await
     }
 
-    fn watch(&self, watch_callback: WatchCallback) -> crate::Result<WatchHandle> {
-        self.directory.watch(watch_callback)
+    async fn watch(&self, watch_callback: WatchCallback) -> crate::Result<WatchHandle> {
+        self.directory.watch(watch_callback).await
     }
 
-    fn sync_directory(&self) -> io::Result<()> {
-        self.directory.sync_directory()?;
+    async fn sync_directory(&self) -> io::Result<()> {
+        self.directory.sync_directory().await?;
         Ok(())
     }
 }

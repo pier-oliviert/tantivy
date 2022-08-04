@@ -56,12 +56,12 @@ pub struct InvertedIndexSerializer {
 
 impl InvertedIndexSerializer {
     /// Open a new `InvertedIndexSerializer` for the given segment
-    pub fn open(segment: &mut Segment) -> crate::Result<InvertedIndexSerializer> {
+    pub async fn open(segment: &mut Segment) -> crate::Result<InvertedIndexSerializer> {
         use crate::SegmentComponent::{Positions, Postings, Terms};
         let inv_index_serializer = InvertedIndexSerializer {
-            terms_write: CompositeWrite::wrap(segment.open_write(Terms)?),
-            postings_write: CompositeWrite::wrap(segment.open_write(Postings)?),
-            positions_write: CompositeWrite::wrap(segment.open_write(Positions)?),
+            terms_write: CompositeWrite::wrap(segment.open_write(Terms).await?),
+            postings_write: CompositeWrite::wrap(segment.open_write(Postings).await?),
+            positions_write: CompositeWrite::wrap(segment.open_write(Positions).await?),
             schema: segment.schema(),
         };
         Ok(inv_index_serializer)

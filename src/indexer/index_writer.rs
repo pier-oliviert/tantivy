@@ -116,7 +116,7 @@ fn compute_deleted_bitset(
 /// is `==` target_opstamp.
 /// For instance, there was no delete operation between the state of the `segment_entry` and
 /// the `target_opstamp`, `segment_entry` is not updated.
-pub(crate) fn advance_deletes(
+pub(crate) async fn advance_deletes(
     mut segment: Segment,
     segment_entry: &mut SegmentEntry,
     target_opstamp: Opstamp,
@@ -131,7 +131,7 @@ pub(crate) fn advance_deletes(
         return Ok(());
     }
 
-    let segment_reader = SegmentReader::open(&segment)?;
+    let segment_reader = SegmentReader::open(&segment).await?;
 
     let max_doc = segment_reader.max_doc();
     let mut alive_bitset: BitSet = match segment_entry.alive_bitset() {
@@ -158,7 +158,7 @@ pub(crate) fn advance_deletes(
     if num_deleted_docs > num_deleted_docs_before {
         // There are new deletes. We need to write a new delete file.
         segment = segment.with_delete_meta(num_deleted_docs as u32, target_opstamp);
-        let mut alive_doc_file = segment.open_write(SegmentComponent::Delete)?;
+        let mut alive_doc_file = segment.open_write(SegmentComponent::Delete).await?;
         write_alive_bitset(&alive_bitset, &mut alive_doc_file)?;
         alive_doc_file.terminate()?;
     }
@@ -167,7 +167,7 @@ pub(crate) fn advance_deletes(
     Ok(())
 }
 
-fn index_documents(
+async fn index_documents(
     memory_budget: usize,
     segment: Segment,
     grouped_document_iterator: &mut dyn Iterator<Item = AddBatch>,
@@ -205,7 +205,8 @@ fn index_documents(
 
     let segment_with_max_doc = segment.with_max_doc(max_doc);
 
-    let alive_bitset_opt = apply_deletes(&segment_with_max_doc, &mut delete_cursor, &doc_opstamps)?;
+    let alive_bitset_opt =
+        apply_deletes(&segment_with_max_doc, &mut delete_cursor, &doc_opstamps).await?;
 
     let meta = segment_with_max_doc.meta().clone();
     meta.untrack_temp_docstore();
@@ -216,7 +217,7 @@ fn index_documents(
 }
 
 /// `doc_opstamps` is required to be non-empty.
-fn apply_deletes(
+async fn apply_deletes(
     segment: &Segment,
     delete_cursor: &mut DeleteCursor,
     doc_opstamps: &[Opstamp],
@@ -233,7 +234,7 @@ fn apply_deletes(
         .max()
         .expect("Empty DocOpstamp is forbidden");
 
-    let segment_reader = SegmentReader::open(segment)?;
+    let segment_reader = SegmentReader::open(segment).await?;
     let doc_to_opstamps = DocToOpstampMapping::WithMap(doc_opstamps);
 
     let max_doc = segment.meta().max_doc();
@@ -267,7 +268,7 @@ impl IndexWriter {
     /// If the lockfile already exists, returns `Error::FileAlreadyExists`.
     /// If the memory arena per thread is too small or too big, returns
     /// `TantivyError::InvalidArgument`
-    pub(crate) fn new(
+    pub(crate) async fn new(
         index: &Index,
         num_threads: usize,
         memory_arena_in_bytes_per_thread: usize,
@@ -292,12 +293,12 @@ impl IndexWriter {
 
         let delete_queue = DeleteQueue::new();
 
-        let current_opstamp = index.load_metas()?.opstamp;
+        let current_opstamp = index.load_metas().await?.opstamp;
 
         let stamper = Stamper::new(current_opstamp);
 
         let segment_updater =
-            SegmentUpdater::create(index.clone(), stamper.clone(), &delete_queue.cursor())?;
+            SegmentUpdater::create(index.clone(), stamper.clone(), &delete_queue.cursor()).await?;
 
         let mut index_writer = IndexWriter {
             _directory_lock: Some(directory_lock),
@@ -320,7 +321,7 @@ impl IndexWriter {
 
             worker_id: 0,
         };
-        index_writer.start_workers()?;
+        index_writer.start_workers().await?;
         Ok(index_writer)
     }
 
@@ -396,7 +397,7 @@ impl IndexWriter {
 
     /// Spawns a new worker thread for indexing.
     /// The thread consumes documents from the pipeline.
-    fn add_indexing_worker(&mut self) -> crate::Result<()> {
+    async fn add_indexing_worker(&mut self) -> crate::Result<()> {
         let document_receiver_clone = self.operation_receiver()?;
         let index_writer_bomb = self.index_writer_status.create_bomb();
 
@@ -408,7 +409,7 @@ impl IndexWriter {
         let index = self.index.clone();
         let join_handle: JoinHandle<crate::Result<()>> = thread::Builder::new()
             .name(format!("thrd-tantivy-index{}", self.worker_id))
-            .spawn(move || {
+            .spawn(move || async {
                 loop {
                     let mut document_iterator = document_receiver_clone
                         .clone()
@@ -438,7 +439,8 @@ impl IndexWriter {
                         &mut document_iterator,
                         &mut segment_updater,
                         delete_cursor.clone(),
-                    )?;
+                    )
+                    .await?;
                 }
             })?;
         self.worker_id += 1;
@@ -456,9 +458,9 @@ impl IndexWriter {
         self.segment_updater.set_merge_policy(merge_policy);
     }
 
-    fn start_workers(&mut self) -> crate::Result<()> {
+    async fn start_workers(&mut self) -> crate::Result<()> {
         for _ in 0..self.num_threads {
-            self.add_indexing_worker()?;
+            self.add_indexing_worker().await?;
         }
         Ok(())
     }
@@ -544,7 +546,7 @@ impl IndexWriter {
     /// state as it was after the last commit.
     ///
     /// The opstamp at the last commit is returned.
-    pub fn rollback(&mut self) -> crate::Result<Opstamp> {
+    pub async fn rollback(&mut self) -> crate::Result<Opstamp> {
         info!("Rolling back to opstamp {}", self.committed_opstamp);
         // marks the segment updater as killed. From now on, all
         // segment updates will be ignored.
@@ -562,7 +564,8 @@ impl IndexWriter {
             self.num_threads,
             self.memory_arena_in_bytes_per_thread,
             directory_lock,
-        )?;
+        )
+        .await?;
 
         // the current `self` is dropped right away because of this call.
         //
@@ -603,7 +606,7 @@ impl IndexWriter {
     /// It is also possible to add a payload to the `commit`
     /// using this API.
     /// See [`PreparedCommit::set_payload()`](PreparedCommit.html)
-    pub fn prepare_commit(&mut self) -> crate::Result<PreparedCommit> {
+    pub async fn prepare_commit(&mut self) -> crate::Result<PreparedCommit> {
         // Here, because we join all of the worker threads,
         // all of the segment update for this commit have been
         // sent.
@@ -627,7 +630,7 @@ impl IndexWriter {
                 .join()
                 .map_err(|e| TantivyError::ErrorInThread(format!("{:?}", e)))?;
             indexing_worker_result?;
-            self.add_indexing_worker()?;
+            self.add_indexing_worker().await?;
         }
 
         let commit_opstamp = self.stamper.stamp();
@@ -649,8 +652,8 @@ impl IndexWriter {
     ///
     /// Commit returns the `opstamp` of the last document
     /// that made it in the commit.
-    pub fn commit(&mut self) -> crate::Result<Opstamp> {
-        self.prepare_commit()?.commit()
+    pub async fn commit(&mut self) -> crate::Result<Opstamp> {
+        self.prepare_commit().await?.commit().await
     }
 
     pub(crate) fn segment_updater(&self) -> &SegmentUpdater {

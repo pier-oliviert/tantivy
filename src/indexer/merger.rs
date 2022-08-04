@@ -165,13 +165,13 @@ impl DeltaComputer {
 }
 
 impl IndexMerger {
-    pub fn open(
+    pub async fn open(
         schema: Schema,
         index_settings: IndexSettings,
         segments: &[Segment],
     ) -> crate::Result<IndexMerger> {
         let alive_bitset = segments.iter().map(|_| None).collect_vec();
-        Self::open_with_custom_alive_set(schema, index_settings, segments, alive_bitset)
+        Self::open_with_custom_alive_set(schema, index_settings, segments, alive_bitset).await
     }
 
     // Create merge with a custom delete set.
@@ -186,7 +186,7 @@ impl IndexMerger {
     // This can be used to merge but also apply an additional filter.
     // One use case is demux, which is basically taking a list of
     // segments and partitions them e.g. by a value in a field.
-    pub fn open_with_custom_alive_set(
+    pub async fn open_with_custom_alive_set(
         schema: Schema,
         index_settings: IndexSettings,
         segments: &[Segment],
@@ -196,7 +196,8 @@ impl IndexMerger {
         for (segment, new_alive_bitset_opt) in segments.iter().zip(alive_bitset_opt.into_iter()) {
             if segment.meta().num_docs() > 0 {
                 let reader =
-                    SegmentReader::open_with_custom_alive_set(segment, new_alive_bitset_opt)?;
+                    SegmentReader::open_with_custom_alive_set(segment, new_alive_bitset_opt)
+                        .await?;
                 readers.push(reader);
             }
         }
@@ -1096,7 +1097,7 @@ impl IndexMerger {
     ///
     /// # Returns
     /// The number of documents in the resulting segment.
-    pub fn write(&self, mut serializer: SegmentSerializer) -> crate::Result<u32> {
+    pub async fn write(&self, mut serializer: SegmentSerializer) -> crate::Result<u32> {
         let doc_id_mapping = if let Some(sort_by_field) = self.index_settings.sort_by_field.as_ref()
         {
             // If the documents are already sorted and stackable, we ignore the mapping and execute
@@ -1116,7 +1117,8 @@ impl IndexMerger {
         debug!("write-postings");
         let fieldnorm_data = serializer
             .segment()
-            .open_read(SegmentComponent::FieldNorms)?;
+            .open_read(SegmentComponent::FieldNorms)
+            .await?;
         let fieldnorm_readers = FieldNormReaders::open(fieldnorm_data)?;
         let term_ord_mappings = self.write_postings(
             serializer.get_postings_serializer(),

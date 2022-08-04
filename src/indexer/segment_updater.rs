@@ -39,7 +39,7 @@ const NUM_MERGE_THREADS: usize = 4;
 /// and flushed.
 ///
 /// This method is not part of tantivy's public API
-pub fn save_new_metas(
+pub async fn save_new_metas(
     schema: Schema,
     index_settings: IndexSettings,
     directory: &dyn Directory,
@@ -53,8 +53,9 @@ pub fn save_new_metas(
             payload: None,
         },
         directory,
-    )?;
-    directory.sync_directory()?;
+    )
+    .await?;
+    directory.sync_directory().await?;
     Ok(())
 }
 
@@ -67,7 +68,7 @@ pub fn save_new_metas(
 /// and flushed.
 ///
 /// This method is not part of tantivy's public API
-fn save_metas(metas: &IndexMeta, directory: &dyn Directory) -> crate::Result<()> {
+async fn save_metas(metas: &IndexMeta, directory: &dyn Directory) -> crate::Result<()> {
     info!("save metas");
     let mut buffer = serde_json::to_vec_pretty(metas)?;
     // Just adding a new line at the end of the buffer.
@@ -78,8 +79,8 @@ fn save_metas(metas: &IndexMeta, directory: &dyn Directory) -> crate::Result<()>
             msg.unwrap_or_else(|| "Undefined".to_string())
         )
     )));
-    directory.sync_directory()?;
-    directory.atomic_write(&META_FILEPATH, &buffer[..])?;
+    directory.sync_directory().await?;
+    directory.atomic_write(&META_FILEPATH, &buffer[..]).await?;
     debug!("Saved metas {:?}", serde_json::to_string_pretty(&metas));
     Ok(())
 }
@@ -104,7 +105,7 @@ impl Deref for SegmentUpdater {
     }
 }
 
-fn garbage_collect_files(
+async fn garbage_collect_files(
     segment_updater: SegmentUpdater,
 ) -> crate::Result<GarbageCollectionResult> {
     info!("Running garbage collection");
@@ -112,11 +113,12 @@ fn garbage_collect_files(
     index
         .directory_mut()
         .garbage_collect(move || segment_updater.list_files())
+        .await
 }
 
 /// Merges a list of segments the list of segment givens in the `segment_entries`.
 /// This function happens in the calling thread and is computationally expensive.
-fn merge(
+async fn merge(
     index: &Index,
     mut segment_entries: Vec<SegmentEntry>,
     target_opstamp: Opstamp,
@@ -127,7 +129,7 @@ fn merge(
     // First we apply all of the delete to the merged segment, up to the target opstamp.
     for segment_entry in &mut segment_entries {
         let segment = index.segment(segment_entry.meta().clone());
-        advance_deletes(segment, segment_entry, target_opstamp)?;
+        advance_deletes(segment, segment_entry, target_opstamp).await?;
     }
 
     let delete_cursor = segment_entries[0].delete_cursor().clone();
@@ -142,9 +144,9 @@ fn merge(
         IndexMerger::open(index.schema(), index.settings().clone(), &segments[..])?;
 
     // ... we just serialize this index merger in our new segment to merge the segments.
-    let segment_serializer = SegmentSerializer::for_segment(merged_segment.clone(), true)?;
+    let segment_serializer = SegmentSerializer::for_segment(merged_segment.clone(), true).await?;
 
-    let num_docs = merger.write(segment_serializer)?;
+    let num_docs = merger.write(segment_serializer).await?;
 
     let merged_segment_id = merged_segment.id();
 
@@ -164,7 +166,7 @@ fn merge(
 /// meant to work if you have an IndexWriter running for the origin indices, or
 /// the destination Index.
 #[doc(hidden)]
-pub fn merge_indices<T: Into<Box<dyn Directory>>>(
+pub async fn merge_indices<T: Into<Box<dyn Directory>>>(
     indices: &[Index],
     output_directory: T,
 ) -> crate::Result<Index> {
@@ -194,7 +196,7 @@ pub fn merge_indices<T: Into<Box<dyn Directory>>>(
     }
 
     let non_filter = segments.iter().map(|_| None).collect::<Vec<_>>();
-    merge_filtered_segments(&segments, target_settings, non_filter, output_directory)
+    merge_filtered_segments(&segments, target_settings, non_filter, output_directory).await
 }
 
 /// Advanced: Merges a list of segments from different indices in a new index.
@@ -210,7 +212,7 @@ pub fn merge_indices<T: Into<Box<dyn Directory>>>(
 /// meant to work if you have an IndexWriter running for the origin indices, or
 /// the destination Index.
 #[doc(hidden)]
-pub fn merge_filtered_segments<T: Into<Box<dyn Directory>>>(
+pub async fn merge_filtered_segments<T: Into<Box<dyn Directory>>>(
     segments: &[Segment],
     target_settings: IndexSettings,
     filter_doc_ids: Vec<Option<AliveBitSet>>,
@@ -240,7 +242,8 @@ pub fn merge_filtered_segments<T: Into<Box<dyn Directory>>>(
         output_directory,
         target_schema.clone(),
         target_settings.clone(),
-    )?;
+    )
+    .await?;
     let merged_segment = merged_index.new_segment();
     let merged_segment_id = merged_segment.id();
     let merger: IndexMerger = IndexMerger::open_with_custom_alive_set(
@@ -249,8 +252,8 @@ pub fn merge_filtered_segments<T: Into<Box<dyn Directory>>>(
         segments,
         filter_doc_ids,
     )?;
-    let segment_serializer = SegmentSerializer::for_segment(merged_segment, true)?;
-    let num_docs = merger.write(segment_serializer)?;
+    let segment_serializer = SegmentSerializer::for_segment(merged_segment, true).await?;
+    let num_docs = merger.write(segment_serializer).await?;
 
     let segment_meta = merged_index.new_segment_meta(merged_segment_id, num_docs);
 
@@ -275,7 +278,7 @@ pub fn merge_filtered_segments<T: Into<Box<dyn Directory>>>(
     };
 
     // save the meta.json
-    save_metas(&index_meta, merged_index.directory_mut())?;
+    save_metas(&index_meta, merged_index.directory_mut()).await?;
 
     Ok(merged_index)
 }
@@ -300,12 +303,12 @@ pub(crate) struct InnerSegmentUpdater {
 }
 
 impl SegmentUpdater {
-    pub fn create(
+    pub async fn create(
         index: Index,
         stamper: Stamper,
         delete_cursor: &DeleteCursor,
     ) -> crate::Result<SegmentUpdater> {
-        let segments = index.searchable_segment_metas()?;
+        let segments = index.searchable_segment_metas().await?;
         let segment_manager = SegmentManager::from_segments(segments, delete_cursor);
         let pool = ThreadPoolBuilder::new()
             .thread_name(|_| "segment_updater".to_string())
@@ -325,7 +328,7 @@ impl SegmentUpdater {
                     "Failed to spawn segment merging thread".to_string(),
                 )
             })?;
-        let index_meta = index.load_metas()?;
+        let index_meta = index.load_metas().await?;
         Ok(SegmentUpdater(Arc::new(InnerSegmentUpdater {
             active_index_meta: RwLock::new(Arc::new(index_meta)),
             pool,
@@ -391,16 +394,16 @@ impl SegmentUpdater {
     ///
     /// The method returns copies of the segment entries,
     /// updated with the delete information.
-    fn purge_deletes(&self, target_opstamp: Opstamp) -> crate::Result<Vec<SegmentEntry>> {
+    async fn purge_deletes(&self, target_opstamp: Opstamp) -> crate::Result<Vec<SegmentEntry>> {
         let mut segment_entries = self.segment_manager.segment_entries();
         for segment_entry in &mut segment_entries {
             let segment = self.index.segment(segment_entry.meta().clone());
-            advance_deletes(segment, segment_entry, target_opstamp)?;
+            advance_deletes(segment, segment_entry, target_opstamp).await?;
         }
         Ok(segment_entries)
     }
 
-    pub fn save_metas(
+    pub async fn save_metas(
         &self,
         opstamp: Opstamp,
         commit_message: Option<String>,
@@ -432,7 +435,7 @@ impl SegmentUpdater {
                 payload: commit_message,
             };
             // TODO add context to the error.
-            save_metas(&index_meta, directory.box_clone().borrow_mut())?;
+            save_metas(&index_meta, directory.box_clone().borrow_mut()).await?;
             self.store_meta(&index_meta);
         }
         Ok(())
@@ -458,16 +461,16 @@ impl SegmentUpdater {
         files
     }
 
-    pub(crate) fn schedule_commit(
+    pub(crate) async fn schedule_commit(
         &self,
         opstamp: Opstamp,
         payload: Option<String>,
     ) -> FutureResult<Opstamp> {
         let segment_updater: SegmentUpdater = self.clone();
         self.schedule_task(move || {
-            let segment_entries = segment_updater.purge_deletes(opstamp)?;
+            let segment_entries = segment_updater.purge_deletes(opstamp).await?;
             segment_updater.segment_manager.commit(segment_entries);
-            segment_updater.save_metas(opstamp, payload)?;
+            segment_updater.save_metas(opstamp, payload).await?;
             let _ = garbage_collect_files(segment_updater.clone());
             segment_updater.consider_merge_options();
             Ok(opstamp)
@@ -599,7 +602,7 @@ impl SegmentUpdater {
     }
 
     /// Queues a `end_merge` in the segment updater and blocks until it is successfully processed.
-    fn end_merge(
+    async fn end_merge(
         &self,
         merge_operation: MergeOperation,
         mut after_merge_segment_entry: SegmentEntry,
@@ -641,7 +644,8 @@ impl SegmentUpdater {
 
                 if segments_status == SegmentsStatus::Committed {
                     segment_updater
-                        .save_metas(previous_metas.opstamp, previous_metas.payload.clone())?;
+                        .save_metas(previous_metas.opstamp, previous_metas.payload.clone())
+                        .await?;
                 }
 
                 segment_updater.consider_merge_options();

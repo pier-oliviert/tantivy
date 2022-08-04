@@ -71,11 +71,11 @@ impl From<io::Error> for TryAcquireLockError {
     }
 }
 
-fn try_acquire_lock(
+async fn try_acquire_lock(
     filepath: &Path,
     directory: &mut dyn Directory,
 ) -> Result<DirectoryLock, TryAcquireLockError> {
-    let mut write = directory.open_write(filepath).map_err(|e| match e {
+    let mut write = directory.open_write(filepath).await.map_err(|e| match e {
         OpenWriteError::FileAlreadyExists(_) => TryAcquireLockError::FileExists,
         OpenWriteError::IoError { io_error, .. } => TryAcquireLockError::IoError(io_error),
     })?;
@@ -106,12 +106,13 @@ fn retry_policy(is_blocking: bool) -> RetryPolicy {
 /// should be your default choice.
 /// - The [`RamDirectory`][crate::directory::RamDirectory], which
 /// should be used mostly for tests.
+#[async_trait::async_trait]
 pub trait Directory: DirectoryClone + fmt::Debug + Send + Sync + 'static {
     /// Opens a file and returns a boxed `FileHandle`.
     ///
     /// Users of `Directory` should typically call `Directory::open_read(...)`,
     /// while `Directory` implementor should implement `get_file_handle()`.
-    fn get_file_handle(&self, path: &Path) -> Result<Arc<dyn FileHandle>, OpenReadError>;
+    async fn get_file_handle(&self, path: &Path) -> Result<Arc<dyn FileHandle>, OpenReadError>;
 
     /// Once a virtual file is open, its data may not
     /// change.
@@ -120,8 +121,8 @@ pub trait Directory: DirectoryClone + fmt::Debug + Send + Sync + 'static {
     /// have no effect on the returned `FileSlice` object.
     ///
     /// You should only use this to read files create with [Directory::open_write].
-    fn open_read(&self, path: &Path) -> Result<FileSlice, OpenReadError> {
-        let file_handle = self.get_file_handle(path)?;
+    async fn open_read(&self, path: &Path) -> Result<FileSlice, OpenReadError> {
+        let file_handle = self.get_file_handle(path).await?;
         Ok(FileSlice::new(file_handle))
     }
 
@@ -132,10 +133,10 @@ pub trait Directory: DirectoryClone + fmt::Debug + Send + Sync + 'static {
     ///
     /// Removing a nonexistent file, yields a
     /// `DeleteError::DoesNotExist`.
-    fn delete(&self, path: &Path) -> Result<(), DeleteError>;
+    async fn delete(&self, path: &Path) -> Result<(), DeleteError>;
 
     /// Returns true if and only if the file exists
-    fn exists(&self, path: &Path) -> Result<bool, OpenReadError>;
+    async fn exists(&self, path: &Path) -> Result<bool, OpenReadError>;
 
     /// Opens a writer for the *virtual file* associated with
     /// a Path.
@@ -162,7 +163,7 @@ pub trait Directory: DirectoryClone + fmt::Debug + Send + Sync + 'static {
     /// was not called.
     ///
     /// The file may not previously exist.
-    fn open_write(&self, path: &Path) -> Result<WritePtr, OpenWriteError>;
+    async fn open_write(&self, path: &Path) -> Result<WritePtr, OpenWriteError>;
 
     /// Reads the full content file that has been written using
     /// atomic_write.
@@ -170,7 +171,7 @@ pub trait Directory: DirectoryClone + fmt::Debug + Send + Sync + 'static {
     /// This should only be used for small files.
     ///
     /// You should only use this to read files create with [Directory::atomic_write].
-    fn atomic_read(&self, path: &Path) -> Result<Vec<u8>, OpenReadError>;
+    async fn atomic_read(&self, path: &Path) -> Result<Vec<u8>, OpenReadError>;
 
     /// Atomically replace the content of a file with data.
     ///
@@ -178,22 +179,22 @@ pub trait Directory: DirectoryClone + fmt::Debug + Send + Sync + 'static {
     /// a partially written file.
     ///
     /// The file may or may not previously exist.
-    fn atomic_write(&self, path: &Path, data: &[u8]) -> io::Result<()>;
+    async fn atomic_write(&self, path: &Path, data: &[u8]) -> io::Result<()>;
 
     /// Sync the directory.
     ///
     /// This call is required to ensure that newly created files are
     /// effectively stored durably.
-    fn sync_directory(&self) -> io::Result<()>;
+    async fn sync_directory(&self) -> io::Result<()>;
 
     /// Acquire a lock in the given directory.
     ///
     /// The method is blocking or not depending on the `Lock` object.
-    fn acquire_lock(&self, lock: &Lock) -> Result<DirectoryLock, LockError> {
+    async fn acquire_lock(&self, lock: &Lock) -> Result<DirectoryLock, LockError> {
         let mut box_directory = self.box_clone();
         let mut retry_policy = retry_policy(lock.is_blocking);
         loop {
-            match try_acquire_lock(&lock.filepath, &mut *box_directory) {
+            match try_acquire_lock(&lock.filepath, &mut *box_directory).await {
                 Ok(result) => {
                     return Ok(result);
                 }
@@ -223,7 +224,7 @@ pub trait Directory: DirectoryClone + fmt::Debug + Send + Sync + 'static {
     /// Internally, tantivy only uses this API to detect new commits to implement the
     /// `OnCommit` `ReloadPolicy`. Not implementing watch in a `Directory` only prevents the
     /// `OnCommit` `ReloadPolicy` to work properly.
-    fn watch(&self, watch_callback: WatchCallback) -> crate::Result<WatchHandle>;
+    async fn watch(&self, watch_callback: WatchCallback) -> crate::Result<WatchHandle>;
 }
 
 /// DirectoryClone
@@ -233,7 +234,8 @@ pub trait DirectoryClone {
 }
 
 impl<T> DirectoryClone for T
-where T: 'static + Directory + Clone
+where
+    T: 'static + Directory + Clone,
 {
     fn box_clone(&self) -> Box<dyn Directory> {
         Box::new(self.clone())

@@ -340,7 +340,7 @@ impl SegmentWriter {
 /// to the `SegmentSerializer`.
 ///
 /// `doc_id_map` is used to map to the new doc_id order.
-fn remap_and_write(
+async fn remap_and_write(
     per_field_postings_writers: &PerFieldPostingsWriter,
     ctx: IndexingContext,
     fast_field_writers: &FastFieldsWriter,
@@ -355,7 +355,8 @@ fn remap_and_write(
     }
     let fieldnorm_data = serializer
         .segment()
-        .open_read(SegmentComponent::FieldNorms)?;
+        .open_read(SegmentComponent::FieldNorms)
+        .await?;
     let fieldnorm_readers = FieldNormReaders::open(fieldnorm_data)?;
     let term_ord_map = serialize_postings(
         ctx,
@@ -377,7 +378,8 @@ fn remap_and_write(
     if let Some(doc_id_map) = doc_id_map {
         let store_write = serializer
             .segment_mut()
-            .open_write(SegmentComponent::Store)?;
+            .open_write(SegmentComponent::Store)
+            .await?;
         let compressor = serializer.segment().index().settings().docstore_compression;
         let block_size = serializer.segment().index().settings().docstore_blocksize;
         let old_store_writer = std::mem::replace(
@@ -388,7 +390,8 @@ fn remap_and_write(
         let store_read = StoreReader::open(
             serializer
                 .segment()
-                .open_read(SegmentComponent::TempStore)?,
+                .open_read(SegmentComponent::TempStore)
+                .await?,
             50,
         )?;
         for old_doc_id in doc_id_map.iter_old_doc_ids() {

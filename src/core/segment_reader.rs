@@ -138,27 +138,27 @@ impl SegmentReader {
     }
 
     /// Open a new segment for reading.
-    pub fn open(segment: &Segment) -> crate::Result<SegmentReader> {
-        Self::open_with_custom_alive_set(segment, None)
+    pub async fn open(segment: &Segment) -> crate::Result<SegmentReader> {
+        Self::open_with_custom_alive_set(segment, None).await
     }
 
     /// Open a new segment for reading.
-    pub fn open_with_custom_alive_set(
+    pub async fn open_with_custom_alive_set(
         segment: &Segment,
         custom_bitset: Option<AliveBitSet>,
     ) -> crate::Result<SegmentReader> {
-        let termdict_file = segment.open_read(SegmentComponent::Terms)?;
+        let termdict_file = segment.open_read(SegmentComponent::Terms).await?;
         let termdict_composite = CompositeFile::open(&termdict_file)?;
 
-        let store_file = segment.open_read(SegmentComponent::Store)?;
+        let store_file = segment.open_read(SegmentComponent::Store).await?;
 
         fail_point!("SegmentReader::open#middle");
 
-        let postings_file = segment.open_read(SegmentComponent::Postings)?;
+        let postings_file = segment.open_read(SegmentComponent::Postings).await?;
         let postings_composite = CompositeFile::open(&postings_file)?;
 
         let positions_composite = {
-            if let Ok(positions_file) = segment.open_read(SegmentComponent::Positions) {
+            if let Ok(positions_file) = segment.open_read(SegmentComponent::Positions).await {
                 CompositeFile::open(&positions_file)?
             } else {
                 CompositeFile::empty()
@@ -167,15 +167,15 @@ impl SegmentReader {
 
         let schema = segment.schema();
 
-        let fast_fields_data = segment.open_read(SegmentComponent::FastFields)?;
+        let fast_fields_data = segment.open_read(SegmentComponent::FastFields).await?;
         let fast_fields_composite = CompositeFile::open(&fast_fields_data)?;
         let fast_fields_readers =
             Arc::new(FastFieldReaders::new(schema.clone(), fast_fields_composite));
-        let fieldnorm_data = segment.open_read(SegmentComponent::FieldNorms)?;
+        let fieldnorm_data = segment.open_read(SegmentComponent::FieldNorms).await?;
         let fieldnorm_readers = FieldNormReaders::open(fieldnorm_data)?;
 
         let original_bitset = if segment.meta().has_deletes() {
-            let alive_doc_file_slice = segment.open_read(SegmentComponent::Delete)?;
+            let alive_doc_file_slice = segment.open_read(SegmentComponent::Delete).await?;
             let alive_doc_data = alive_doc_file_slice.read_bytes()?;
             Some(AliveBitSet::open(alive_doc_data))
         } else {

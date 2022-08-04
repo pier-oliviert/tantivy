@@ -76,15 +76,18 @@ impl Segment {
     }
 
     /// Open one of the component file for a *regular* read.
-    pub fn open_read(&self, component: SegmentComponent) -> Result<FileSlice, OpenReadError> {
+    pub async fn open_read(&self, component: SegmentComponent) -> Result<FileSlice, OpenReadError> {
         let path = self.relative_path(component);
-        self.index.directory().open_read(&path)
+        self.index.directory().open_read(&path).await
     }
 
     /// Open one of the component file for *regular* write.
-    pub fn open_write(&mut self, component: SegmentComponent) -> Result<WritePtr, OpenWriteError> {
+    pub async fn open_write(
+        &mut self,
+        component: SegmentComponent,
+    ) -> Result<WritePtr, OpenWriteError> {
         let path = self.relative_path(component);
-        let write = self.index.directory_mut().open_write(&path)?;
+        let write = self.index.directory_mut().open_write(&path).await?;
         Ok(write)
     }
 }
