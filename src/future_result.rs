@@ -35,9 +35,8 @@ impl<T> From<TantivyError> for FutureResult<T> {
 }
 
 impl<T> FutureResult<T> {
-    pub(crate) fn create(
-        error_msg_if_failure: &'static str,
-    ) -> (Self, oneshot::Sender<crate::Result<T>>) {
+    /// Create a FutureResult to run a task asynchronously.
+    pub fn create(error_msg_if_failure: &'static str) -> (Self, oneshot::Sender<crate::Result<T>>) {
         let (sender, receiver) = oneshot::channel();
         let inner: Inner<T> = Inner::InProgress {
             receiver,
